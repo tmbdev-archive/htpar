@@ -7,6 +7,7 @@ Planned components:
  - htextract: extract data from a collection of sharded tar files
  - htshuffle: shuffle and reshard a collection of sharded tar files
  - htsort: sort, reduce, and reshard a collection of sharded tar files
+ - htupload: upload a dataset as a collection of sharded tar files
 
 Together, these programs give you the functionality of map-reduce
 systems, but they are conceptually simpler and use HTTP GET/PUT for
