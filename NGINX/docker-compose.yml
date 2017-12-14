@@ -1,0 +1,17 @@
+version: "3.2"
+
+services:
+  web:
+    build: ./nginx-full
+    image: nginx
+    restart: always
+    volumes:
+    - ./nginx-extra.conf:/etc/nginx/nginx.conf:ro
+    # Set a password with htpasswd -c ./htpasswd user-name, then
+    # enable the following line for password protection:
+    # - ./htpasswd:/etc/nginx/htpasswd
+    # You also need to enable authentication in nginx-extra.conf
+    - /work/data:/data:rw
+    command: /bin/bash -c "rm -rf /etc/nginx/nginx.d; nginx -g 'daemon off;'"
+    ports:
+    - "18880:80"

@@ -62,9 +62,13 @@ class HttpStorage(ObjectStorage):
         self.pattern = "^https?:.*$"
         assert os.system("curl --version") == 0, "curl not working"
     def open_read(self, location):
-        return os.popen("curl '%s'" % location, "rb")
+        cmd = "curl -s '%s'" % location
+        print "#", cmd
+        return os.popen(cmd, "rb")
     def open_write(self, location):
-        return os.popen("curl -T - '%s'" % location, "wb")
+        cmd = "curl -s -T - '%s'" % location
+        print "#", cmd
+        return os.popen(cmd, "wb")
 
 class GenericStorage(ObjectStorage):
     """Open I/O streams based on URL patterns."""
@@ -94,7 +98,7 @@ def splitallext(path):
     :returns: path with all extensions removed
 
     """
-    match = re.match(r"^((?:.*/|)[^.]+)[.]([^/]*)$", path)
+    match = re.match(r"^(.*?/?[^.]+)[.]([^/]*)$", path)
     if not match:
         return None, None
     return match.group(1), match.group(2)
@@ -119,6 +123,7 @@ def last_dir(fname):
 
 def tarrecords(fileobj, keys=base_plus_ext):
     """Iterate over tar streams."""
+    global very_verbose
     current_count = 0
     current_prefix = None
     current_sample = None
@@ -131,6 +136,7 @@ def tarrecords(fileobj, keys=base_plus_ext):
             warnings.warn("tarinfo.name is None")
             continue
         prefix, suffix = keys(fname)
+        if very_verbose: print ">>>", fname, prefix, suffix
         if prefix is None:
             warnings.warn("prefix is None for: %s" % (tarinfo.name,))
             continue
@@ -213,12 +219,15 @@ def process_paths(iname, oname, source, keys=base_plus_ext):
         print stream.name
         pmod = imp.load_source("processing_mod", stream.name)
     count = 0
+
     istream = storage.open_read(iname)
     assert istream is not None, iname
+    reader = tarrecords(istream, keys=keys)
+
     ostream = storage.open_write(oname)
     assert ostream is not None, oname
-    reader = tarrecords(istream, keys=keys)
     writer = TarRecords(ostream)
+
     for record in reader:
         # if count%10 == 0: print count
         result = pmod.process_sample(record)
@@ -238,7 +247,7 @@ def split_sharded_path(path):
     """Split a path containing shard notation into prefix, format, suffix, and number."""
     match = re.search(r"^(.*)@([0-9]+)(.*)", path)
     if not match:
-        return [path]
+        return path, None
     prefix = match.group(1)
     num = int(match.group(2))
     suffix = match.group(3)
@@ -250,16 +259,19 @@ if __name__=="__main__":
     parser.add_argument("-p", "--process", default="process_sample.py")
     parser.add_argument("-d", "--dask", default=None)
     parser.add_argument("-k", "--keys", default="base_plus_ext")
+    parser.add_argument("--vv", action="store_true")
     parser.add_argument("inputs")
     parser.add_argument("outputs")
     args = parser.parse_args()
+
+    very_verbose = args.vv
 
     ## Function used for splitting tar file names into record key and sample keys.
     keys = globals()[args.keys]
     assert callable(keys)
 
     ## Load the record processing code.
-    with open("process_sample.py") as stream:
+    with open(args.process) as stream:
         source = stream.read()
     pmod = imp.load_source("processing_mod", stream.name)
     assert "process_sample" in dir(pmod), \
@@ -270,8 +282,12 @@ if __name__=="__main__":
     ifmt, ninputs = split_sharded_path(args.inputs)
     ofmt, noutputs = split_sharded_path(args.outputs)
     assert ninputs == noutputs
-    inputs = [ifmt % i for i in range(ninputs)]
-    outputs = [ofmt % i for i in range(noutputs)]
+    if ninputs is None:
+        inputs = [ifmt]
+        outputs = [ofmt]
+    else:
+        inputs = [ifmt % i for i in range(ninputs)]
+        outputs = [ofmt % i for i in range(noutputs)]
 
     ## Map over the path pairs in parallel.
     client = Client(args.dask)
