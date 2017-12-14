@@ -1,0 +1,284 @@
+#!/usr/bin/python
+
+import argparse
+import sys
+import os
+import os.path
+import re
+import StringIO
+import tarfile
+import warnings
+import time
+import imp
+import tempfile
+from dask.distributed import Client
+from contextlib import closing
+
+###
+### An abstraction of streaming object storage.
+### TODO: put this into a small library, make it loadable
+###
+
+class ObjectStorage(object):
+    def __init__(self):
+        self.pattern = "unimplemented:.*"
+    def open_read(self, location):
+        raise Exception("unimplemented")
+    def open_write(self, location):
+        raise Exception("unimplemented")
+    def delete(self, location):
+        raise Exception("unimplemented")
+    def rename(self, old, new):
+        raise Exception("unimplemented")
+    def list(self, location):
+        raise Exception("unimplemented")
+    def exists(self, location):
+        try:
+            with self.open_read(location) as stream:
+                pass
+            return True
+        except:
+            return False
+
+class GsStorage(ObjectStorage):
+    """Open streams on Google Cloud object storage.
+
+    This uses the `gsutil` command line tool, both for simplicity
+    and because it allows asynchronouse input/output operations."""
+    def __init__(self):
+        self.pattern = "^gs:.*$"
+        assert os.system("gsutil -v") == 0, "gsutil not working"
+    def open_read(self, location):
+        return os.popen("gsutil cat '%s'" % location, "rb")
+    def open_write(self, location):
+        return os.popen("gsutil cp - '%s'" % location, "wb")
+
+class HttpStorage(ObjectStorage):
+    """Open streams on web servers.
+
+    This uses `curl` for asynchronous I/O. You can also use
+    a `.netrc` to handle authentication with `curl`."""
+    def __init__(self):
+        self.pattern = "^https?:.*$"
+        assert os.system("curl --version") == 0, "curl not working"
+    def open_read(self, location):
+        return os.popen("curl '%s'" % location, "rb")
+    def open_write(self, location):
+        return os.popen("curl -T - '%s'" % location, "wb")
+
+class GenericStorage(ObjectStorage):
+    """Open I/O streams based on URL patterns."""
+    def __init__(self):
+        self.handlers = [GsStorage(), HttpStorage()]
+    def find_handler(self, location):
+        for handler in self.handlers:
+            if re.search(handler.pattern, location):
+                print location, handler
+                return handler
+        raise Exception("{}: no storage handler".format(location))
+    def open_read(self, location):
+        return self.find_handler(location).open_read(location)
+    def open_write(self, location):
+        return self.find_handler(location).open_write(location)
+
+###
+### Mappings from paths to sample key / component key
+###
+
+def splitallext(path):
+    """Helper method that splits off all extension.
+
+    Returns base, allext.
+
+    :param path: path with extensions
+    :returns: path with all extensions removed
+
+    """
+    match = re.match(r"^((?:.*/|)[^.]+)[.]([^/]*)$", path)
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
+
+def base_plus_ext(fname):
+    """Splits pathnames into the file basename plus the extension."""
+    return splitallext(fname)
+
+def dir_plus_file(fname):
+    """Splits pathnames into the dirname plus the filename."""
+    return os.path.split(fname)
+
+def last_dir(fname):
+    """Splits pathnames into the last dir plus the filename."""
+    dirname, plain = os.path.split(fname)
+    prefix, last = os.path.split(dirname)
+    return last, plain
+
+###
+### Tar file iterators.
+###
+
+def tarrecords(fileobj, keys=base_plus_ext):
+    """Iterate over tar streams."""
+    current_count = 0
+    current_prefix = None
+    current_sample = None
+    stream = tarfile.open(fileobj=fileobj, mode="r|*")
+    for tarinfo in stream:
+        if not tarinfo.isreg():
+            continue
+        fname = tarinfo.name
+        if fname is None:
+            warnings.warn("tarinfo.name is None")
+            continue
+        prefix, suffix = keys(fname)
+        if prefix is None:
+            warnings.warn("prefix is None for: %s" % (tarinfo.name,))
+            continue
+        if prefix != current_prefix:
+            if current_sample is not None and \
+               not current_sample.get("__bad__", False):
+                yield current_sample
+            current_prefix = prefix
+            current_sample = dict(__key__=prefix)
+        try:
+            data = stream.extractfile(tarinfo).read()
+        except tarfile.ReadError, e:
+            print "tarfile.ReadError at", current_count
+            print "file:", tarinfo.name
+            print e
+            current_sample["__bad__"] = True
+        else:
+            current_sample[suffix] = data
+            current_count += 1
+    if len(current_sample.keys()) > 0:
+        yield current_sample
+    try: del archive
+    except: pass
+
+class TarRecords(object):
+    """Write records to tar streams."""
+    def __init__(self, stream):
+        self.tarstream = tarfile.open(fileobj=stream, mode="w:gz")
+
+    def __enter__(self):
+        """Context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager."""
+        self.close()
+
+    def close(self):
+        """Close the tar file."""
+        self.tarstream.close()
+
+    def write(self, key, obj):
+        """Write a dictionary to the tar file.
+
+        This applies the conversions and renames that the TarWriter
+        was configured with.
+
+        :param str key: basename for the tar file entry
+        :param str obj: dictionary of objects to be stored
+        :returns: size of the entry
+
+        """
+        total = 0
+        for k in sorted(obj.keys()):
+            if k.startswith("_"): continue
+	    v = obj[k]
+	    if isinstance(v, unicode):
+	       v = codecs.encode(v, "utf-8")
+            assert isinstance(v, (str, buffer)),  \
+                "converter didn't yield a string: %s" % ((k, type(v)),)
+            now = time.time()
+            ti = tarfile.TarInfo(key + "." + k)
+            ti.size = len(v)
+            ti.mtime = now
+            ti.mode = 0o666
+            ti.uname = "bigdata"
+            ti.gname = "bigdata"
+            content = StringIO.StringIO(v)
+            self.tarstream.addfile(ti, content)
+            total += ti.size
+        return total
+
+def process_paths(iname, oname, source, keys=base_plus_ext):
+    """Process a tar input file to a tar output file."""
+    assert callable(keys)
+    storage = GenericStorage()
+    with tempfile.NamedTemporaryFile(suffix=".py") as stream:
+        stream.write(source)
+        stream.flush()
+        print stream.name
+        pmod = imp.load_source("processing_mod", stream.name)
+    count = 0
+    istream = storage.open_read(iname)
+    assert istream is not None, iname
+    ostream = storage.open_write(oname)
+    assert ostream is not None, oname
+    reader = tarrecords(istream, keys=keys)
+    writer = TarRecords(ostream)
+    for record in reader:
+        # if count%10 == 0: print count
+        result = pmod.process_sample(record)
+        if result is None:
+            continue
+        if "__key__" not in result:
+            warnings.warn("no __key__ in record")
+            continue
+        writer.write(result["__key__"], result)
+        count += 1
+    del istream
+    del ostream
+    del pmod
+    return (iname, oname)
+
+def split_sharded_path(path):
+    """Split a path containing shard notation into prefix, format, suffix, and number."""
+    match = re.search(r"^(.*)@([0-9]+)(.*)", path)
+    if not match:
+        return [path]
+    prefix = match.group(1)
+    num = int(match.group(2))
+    suffix = match.group(3)
+    fmt = "%%0%dd" % len(match.group(2))
+    return prefix+fmt+suffix, num
+
+if __name__=="__main__":
+    parser = argparse.ArgumentParser("Mapping sharded tar files.")
+    parser.add_argument("-p", "--process", default="process_sample.py")
+    parser.add_argument("-d", "--dask", default=None)
+    parser.add_argument("-k", "--keys", default="base_plus_ext")
+    parser.add_argument("inputs")
+    parser.add_argument("outputs")
+    args = parser.parse_args()
+
+    ## Function used for splitting tar file names into record key and sample keys.
+    keys = globals()[args.keys]
+    assert callable(keys)
+
+    ## Load the record processing code.
+    with open("process_sample.py") as stream:
+        source = stream.read()
+    pmod = imp.load_source("processing_mod", stream.name)
+    assert "process_sample" in dir(pmod), \
+        "{} does not define process_sample function".format(args.process)
+
+
+    ## Compute the set of paths to iterate over.
+    ifmt, ninputs = split_sharded_path(args.inputs)
+    ofmt, noutputs = split_sharded_path(args.outputs)
+    assert ninputs == noutputs
+    inputs = [ifmt % i for i in range(ninputs)]
+    outputs = [ofmt % i for i in range(noutputs)]
+
+    ## Map over the path pairs in parallel.
+    client = Client(args.dask)
+    print client
+    result = client.map(process_paths, inputs, outputs,
+                        [source]*len(inputs),
+                        [keys]*len(inputs))
+
+    ## Wait for results.
+    print client.gather(result)
