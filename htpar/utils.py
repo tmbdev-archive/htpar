@@ -12,6 +12,17 @@ import tempfile
 from dask.distributed import Client
 from contextlib import closing
 
+def split_sharded_path(path):
+    """Split a path containing shard notation into prefix, format, suffix, and number."""
+    match = re.search(r"^(.*)@([0-9]+)(.*)", path)
+    if not match:
+        return path, None
+    prefix = match.group(1)
+    num = int(match.group(2))
+    suffix = match.group(3)
+    fmt = "%%0%dd" % len(match.group(2))
+    return prefix+fmt+suffix, num
+
 def splitallext(path):
     """Helper method that splits off all extension.
 
