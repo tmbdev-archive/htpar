@@ -12,7 +12,7 @@ Planned components:
 Together, these programs give you the functionality of map-reduce
 systems, but they are conceptually simpler and use HTTP GET/PUT for
 storage; they can be used with Amazon S3, Google Cloud Storage, and
-NGINX servers.
+web servers.
 
 The sharded tar files can be used as input to the `dlinputs` library
 for PyTorch.
@@ -22,6 +22,9 @@ just run multithreaded on the local machine, but you can start up
 a `dask-scheduler` and multiple `dask-worker` processes on different
 machines. In the cloud, you can start up everything using `dask-kubernetes`
 or similar tools.
+
+The NGINX subdirectory contains a simple Docker configuration suitable for
+read/write web-based training set storage.
 
 htmapper
 --------
