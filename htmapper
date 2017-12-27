@@ -18,13 +18,14 @@ import htpar
 def process_paths(iname, oname, source, keys):
     """Process a tar input file to a tar output file."""
     assert callable(keys)
-    storage = htpar.GenericStorage()
     with tempfile.NamedTemporaryFile(suffix=".py") as stream:
         stream.write(source)
         stream.flush()
         # print stream.name
         pmod = imp.load_source("processing_mod", stream.name)
     count = 0
+
+    storage = htpar.storage
 
     istream = storage.open_read(iname)
     assert istream is not None, iname

@@ -23,6 +23,14 @@ def split_sharded_path(path):
     fmt = "%%0%dd" % len(match.group(2))
     return prefix+fmt+suffix, num
 
+def path_shards(path):
+    fmt, n = split_sharded_path(path)
+    if n is None:
+        yield fmt
+    else:
+        for i in range(n):
+            yield (fmt % i)
+
 def splitallext(path):
     """Helper method that splits off all extension.
 

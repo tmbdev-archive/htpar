@@ -9,18 +9,27 @@ import warnings
 import time
 import imp
 import tempfile
+import hashlib
 from dask.distributed import Client
 from contextlib import closing
+
+import utils
+import storage
 
 ###
 ### Tar file iterators.
 ###
 
-def tarrecords(fileobj, keys):
+def tarrecords(fileobj, keys=utils.base_plus_ext):
     """Iterate over tar streams."""
     current_count = 0
     current_prefix = None
     current_sample = None
+    if isinstance(fileobj, str):
+        fileobj = storage.storage.open_read(fileobj)
+        closer = fileobj
+    else:
+        closer = None
     stream = tarfile.open(fileobj=fileobj, mode="r|*")
     for tarinfo in stream:
         if not tarinfo.isreg():
@@ -53,10 +62,17 @@ def tarrecords(fileobj, keys):
         yield current_sample
     try: del archive
     except: pass
+    if closer is None:
+        closer.close()
 
 class TarRecords(object):
     """Write records to tar streams."""
     def __init__(self, stream):
+        if isinstance(stream, str):
+            stream = storage.storage.open_write(stream)
+            self.fileobj = stream
+        else:
+            self.fileobj = None
         self.tarstream = tarfile.open(fileobj=stream, mode="w:gz")
 
     def __enter__(self):
@@ -70,6 +86,8 @@ class TarRecords(object):
     def close(self):
         """Close the tar file."""
         self.tarstream.close()
+        if self.fileobj is not None:
+            self.fileobj.close()
 
     def write(self, key, obj):
         """Write a dictionary to the tar file.
@@ -102,3 +120,46 @@ class TarRecords(object):
             total += ti.size
         return total
 
+def tarshards(spec):
+    for path in utils.path_shards(spec):
+        for record in tarrecords(path):
+            yield record
+
+def default_shard_function(key, obj):
+    assert isinstance(key, (str, unicode))
+    return int(hashlib.md5(key).hexdigest()[:7], 16)
+
+class TarShards(object):
+    """Write records to multiple tar streams using a sharding function.
+
+    FIXME: distribute this with Dask
+    """
+    def __init__(self, spec, dest=storage.storage, shard_function=None):
+        self.streams = []
+        for path in utils.path_shards(spec):
+            stream = dest.open_write(path)
+            tarstream = TarRecords(stream)
+            self.streams.append((tarstream, path, stream))
+        self.shard_function = shard_function or default_shard_function
+        print "[opened %d output streams]" % len(self.streams)
+
+    def __enter__(self):
+        """Context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager."""
+        self.close()
+
+    def close(self):
+        """Close the tar file."""
+        for ts, p, s in self.streams:
+            try:
+                ts.close()
+                s.close()
+            except:
+                pass
+
+    def write(self, key, obj):
+        bucket = self.shard_function(key, obj) % len(self.streams)
+        return self.streams[bucket][0].write(key, obj)

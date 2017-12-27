@@ -58,10 +58,19 @@ class HttpStorage(ObjectStorage):
         print "#", cmd
         return os.popen(cmd, "wb")
 
+class LocalStorage(ObjectStorage):
+    """Open streams on the local file system."""
+    def __init__(self):
+        self.pattern = "^[^:]*$"
+    def open_read(self, location):
+        return open(location, "rb")
+    def open_write(self, location):
+        return open(location, "wb")
+
 class GenericStorage(ObjectStorage):
     """Open I/O streams based on URL patterns."""
     def __init__(self):
-        self.handlers = [GsStorage(), HttpStorage()]
+        self.handlers = [GsStorage(), HttpStorage(), LocalStorage()]
     def find_handler(self, location):
         for handler in self.handlers:
             if re.search(handler.pattern, location):
@@ -73,3 +82,4 @@ class GenericStorage(ObjectStorage):
     def open_write(self, location):
         return self.find_handler(location).open_write(location)
 
+storage = GenericStorage()
