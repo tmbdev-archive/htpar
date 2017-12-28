@@ -1,0 +1,27 @@
+#!/usr/bin/python
+
+import argparse
+import sys
+import os
+import os.path
+import re
+import StringIO
+import tarfile
+import warnings
+import time
+import imp
+import tempfile
+from dask.distributed import Client
+from contextlib import closing
+import htpar
+
+if __name__=="__main__":
+    parser = argparse.ArgumentParser("Shuffling/resharding files.")
+    parser.add_argument("inputs")
+    parser.add_argument("outputs")
+    args = parser.parse_args()
+
+    storage = htpar.GenericStorage()
+    writer = htpar.TarShards(args.output)
+
+    for path in htpar.expand_shards(args.input):

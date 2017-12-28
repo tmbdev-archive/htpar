@@ -1,0 +1,16 @@
+version: "3.2"
+
+services:
+  htpar-test:
+    build: ./nginx-full
+    image: nginx-full
+    restart: always
+    volumes:
+    - ./nginx-extra.conf:/etc/nginx/nginx.conf:ro
+    - ./test-data:/data:rw
+    # We're doing tests in the _test subdirectory in case someone
+    # accidentally starts up the test config with a valuable data
+    # directory.
+    command: /bin/bash -c "rm -rf /data/_test && mkdir /data/_test && chown www-data /data/_test && nginx -g 'daemon off;'"
+    ports:
+    - "28880:80"
