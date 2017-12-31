@@ -6,6 +6,7 @@ import StringIO
 import warnings
 import tempfile
 from contextlib import closing
+from subprocess import Popen, PIPE, check_call
 
 class ObjectStorage(object):
     def __init__(self):
@@ -46,16 +47,23 @@ class HttpStorage(ObjectStorage):
 
     This uses `curl` for asynchronous I/O. You can also use
     a `.netrc` to handle authentication with `curl`."""
-    def __init__(self):
+    def __init__(self, pretest=True):
         self.pattern = "^https?:.*$"
+        self.pretest = pretest
         assert os.system("curl --version > /dev/null 2>&1") == 0, "curl not working"
+    def test_location(self, location):
+        proc = Popen(["curl", "--fail", "-s", "-T", "-", location], stdin=PIPE)
+        proc.stdin.close()
+        if proc.wait() != 0:
+            raise Exception("{}: cannot write location".format(location))
+        check_call(["curl", "--fail", "-X", "DELETE", location])
     def open_read(self, location):
-        cmd = "curl -s '%s'" % location
-        print "#", cmd
+        cmd = "curl --fail -s '%s'" % location
         return os.popen(cmd, "rb")
     def open_write(self, location):
-        cmd = "curl -s -T - '%s'" % location
-        print "#", cmd
+        if self.pretest:
+            self.test_location(location)
+        cmd = "curl --fail -s -T - '%s'" % location
         return os.popen(cmd, "wb")
 
 class LocalStorage(ObjectStorage):
