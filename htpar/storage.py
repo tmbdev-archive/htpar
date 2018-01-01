@@ -78,7 +78,12 @@ class LocalStorage(ObjectStorage):
 class GenericStorage(ObjectStorage):
     """Open I/O streams based on URL patterns."""
     def __init__(self):
-        self.handlers = [GsStorage(), HttpStorage(), LocalStorage()]
+        self.handlers = []
+        for constructor in [GsStorage, HttpStorage, LocalStorage]:
+            try:
+                self.handlers += [constructor()]
+            except Exception, _:
+                print "{}: failed to initialize".format(constructor)
     def find_handler(self, location):
         for handler in self.handlers:
             if re.search(handler.pattern, location):
