@@ -14,64 +14,97 @@ import tempfile
 from dask.distributed import Client
 from contextlib import closing
 import htpar
+import hashlib
+
+def default_hash(obj, nbuckets, seed=0):
+    digest = hashlib.md5()
+    digest.update(str(seed))
+    digest.update(obj)
+    raw = int(digest.hexdigest()[:7], 16)
+    del digest
+    return raw % nbuckets
+
+def load_mod(modname, source):
+    import imp
+    import tempfile
+    imp.acquire_lock()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".py") as stream:
+            stream.write(source)
+            stream.flush()
+            return str(imp.load_source(modname, stream.name))
+    finally:
+        imp.release_lock()
 
 def read_file(fname):
     with open(fname) as stream:
         return stream.read()
-
-def load_source(source):
-    global pmod
-    with tempfile.NamedTemporaryFile(suffix=".py") as stream:
-        stream.write(source)
-        stream.flush()
-        pmod = imp.load_source("processing_mod", stream.name)
 
 def input_records(url):
     for shard in htpar.path_shards(url):
         for record in htpar.tarrecords(shard):
             yield record
 
+def process(record):
+    import platform
+    start = time.time()
+    import htcshard_mod
+    try:
+        result = htcshard_mod.process(record)
+    except Exception, e:
+        e.record = record
+        return e
+    stop = time.time()
+    result["__time__"] = stop - start
+    result["__worker__"] = "{}:{}".format(platform.node(), os.getpid())
+    return result
+
+default_source = """
+def process(record):
+    return record
+"""
+
 if __name__=="__main__":
     parser = argparse.ArgumentParser("Mapping sharded tar files.")
-    parser.add_argument("-p", "--process", default="process_sample.py")
-    parser.add_argument("-d", "--dask", default=None)
-    parser.add_argument("-k", "--keys", default="base_plus_ext")
+    parser.add_argument("-p", "--process", default=None)
+    parser.add_argument("-d", "--dask", default="localhost:8786")
     parser.add_argument("inputs")
     parser.add_argument("outputs")
     args = parser.parse_args()
 
-    source = read_File(args.process)
-    client.run(load_source, source)
-
-    ## Function used for splitting tar file names into record key and sample keys.
-    keys = htpar.get_keyfun(args.keys)
-    assert callable(keys)
-
-    ## Load the record processing code.
-    with open(args.process) as stream:
-        source = stream.read()
-    pmod = imp.load_source("processing_mod", stream.name)
-    assert "process_sample" in dir(pmod), \
-        "{} does not define process_sample function".format(args.process)
-
-
-    ## Compute the set of paths to iterate over.
-    ifmt, ninputs = split_sharded_path(args.inputs)
-    ofmt, noutputs = split_sharded_path(args.outputs)
-    assert ninputs == noutputs
-    if ninputs is None:
-        inputs = [ifmt]
-        outputs = [ofmt]
-    else:
-        inputs = [ifmt % i for i in range(ninputs)]
-        outputs = [ofmt % i for i in range(noutputs)]
-
-    ## Map over the path pairs in parallel.
     client = Client(args.dask)
     print client
-    result = client.map(process_paths, inputs, outputs,
-                        [source]*len(inputs),
-                        [keys]*len(inputs))
 
-    ## Wait for results.
-    print client.gather(result)
+    outputs = list(htpar.path_shards(args.outputs))
+    nshards = len(outputs)
+
+    if args.process is not None:
+        source = read_file(args.process)
+    else:
+        source = default_source
+
+    load_mod("htcshard_mod", source)
+    import htcshard_mod
+
+    print client.run(load_mod, "htcshard_mod", source)
+
+    failures = []
+    results = client.map(process, input_records(args.inputs))
+    count = 0
+    for fresult in results:
+        outputs = fresult.result()
+        if isinstance(outputs, Exception):
+            failures.append(outputs.record.get("__key__"))
+            print "{}: failed\n{}".format(outputs.record.get("__key__"),
+                                          outputs)
+            continue
+        if not isinstance(outputs, list):
+            outputs = [outputs]
+        for record in outputs:
+            if "__key__" not in record:
+                record["__key__"] = "%08d" % count
+            if "__shard__" not in record:
+                record["__shard__"] = default_hash(record["__key__"], nshards)
+            count += 1
+            print record["__key__"], record["__shard__"],
+            print record["__time__"], record["__worker__"]
