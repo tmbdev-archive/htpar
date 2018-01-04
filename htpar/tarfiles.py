@@ -12,6 +12,7 @@ import tempfile
 import hashlib
 from dask.distributed import Client
 from contextlib import closing
+from random import randint
 
 import utils
 import storage
@@ -89,7 +90,7 @@ class TarRecords(object):
         if self.fileobj is not None:
             self.fileobj.close()
 
-    def write(self, key, obj):
+    def write(self, obj):
         """Write a dictionary to the tar file.
 
         This applies the conversions and renames that the TarWriter
@@ -101,6 +102,7 @@ class TarRecords(object):
 
         """
         total = 0
+        key = obj["__key__"]
         for k in sorted(obj.keys()):
             if k.startswith("_"): continue
 	    v = obj[k]
@@ -125,23 +127,42 @@ def tarshards(spec):
         for record in tarrecords(path):
             yield record
 
-def default_shard_function(key, obj):
+def default_shard_function(obj, nshards):
+    key = obj["__key__"]
     assert isinstance(key, (str, unicode))
-    return int(hashlib.md5(key).hexdigest()[:7], 16)
+    return int(hashlib.md5(key).hexdigest()[:7], 16) % nshards
 
 class TarShards(object):
     """Write records to multiple tar streams using a sharding function.
 
     FIXME: distribute this with Dask
     """
-    def __init__(self, spec, dest=storage.storage, shard_function=None):
+    def __init__(self, spec, dest=storage.storage, shard_function=None, override_shards=False):
         self.streams = []
         for path in utils.path_shards(spec):
             stream = dest.open_write(path)
             tarstream = TarRecords(stream)
             self.streams.append((tarstream, path, stream))
+        self.override_shards = override_shards
         self.shard_function = shard_function or default_shard_function
         print "[opened %d output streams]" % len(self.streams)
+
+    def get_shard(self, obj):
+        nshards = self.nshards()
+        if not self.override_shards:
+            if "__shard__" in obj:
+                shard = obj["__shard__"]
+                assert shard >= 0 and shard < nshards
+                return shard
+            if "__hash__" in obj:
+                hash = obj["__hash__"]
+                assert isinstance(hash, int)
+                if hash < 0: hash = -hash
+                return hash % nshards
+        return self.shard_function(obj, nshards)
+
+    def nshards(self):
+        return len(self.streams)
 
     def __enter__(self):
         """Context manager."""
@@ -160,6 +181,8 @@ class TarShards(object):
             except:
                 pass
 
-    def write(self, key, obj):
-        bucket = self.shard_function(key, obj) % len(self.streams)
-        return self.streams[bucket][0].write(key, obj)
+    def write(self, obj):
+        key = obj["__key__"]
+        bucket = self.get_shard(obj)
+        size = self.streams[bucket][0].write(obj)
+        return (bucket, size)

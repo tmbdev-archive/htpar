@@ -28,6 +28,8 @@ def load_mod(modname, source):
     import imp
     import tempfile
     imp.acquire_lock()
+    if modname in sys.modules:
+        del sys.modules[modname]
     try:
         with tempfile.NamedTemporaryFile(suffix=".py") as stream:
             stream.write(source)
@@ -50,14 +52,17 @@ def process(record):
     start = time.time()
     import htcshard_mod
     try:
-        result = htcshard_mod.process(record)
+        results = htcshard_mod.process(record)
     except Exception, e:
         e.record = record
         return e
     stop = time.time()
-    result["__time__"] = stop - start
-    result["__worker__"] = "{}:{}".format(platform.node(), os.getpid())
-    return result
+    if not isinstance(results, list):
+        results = [results]
+    for result in results:
+        result["__time__"] = stop - start
+        result["__worker__"] = "{}:{}".format(platform.node(), os.getpid())
+    return results
 
 default_source = """
 def process(record):
@@ -75,8 +80,7 @@ if __name__=="__main__":
     client = Client(args.dask)
     print client
 
-    outputs = list(htpar.path_shards(args.outputs))
-    nshards = len(outputs)
+    output_shards = htpar.TarShards(args.outputs)
 
     if args.process is not None:
         source = read_file(args.process)
@@ -94,17 +98,13 @@ if __name__=="__main__":
     for fresult in results:
         outputs = fresult.result()
         if isinstance(outputs, Exception):
-            failures.append(outputs.record.get("__key__"))
-            print "{}: failed\n{}".format(outputs.record.get("__key__"),
-                                          outputs)
+            print repr(outputs)
             continue
         if not isinstance(outputs, list):
             outputs = [outputs]
         for record in outputs:
-            if "__key__" not in record:
-                record["__key__"] = "%08d" % count
-            if "__shard__" not in record:
-                record["__shard__"] = default_hash(record["__key__"], nshards)
+            size, shard = output_shards.write(record)
             count += 1
-            print record["__key__"], record["__shard__"],
+            key = record.get("__key__")
+            print key, size, shard,
             print record["__time__"], record["__worker__"]
