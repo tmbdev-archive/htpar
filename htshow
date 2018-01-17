@@ -1,0 +1,96 @@
+#!/usr/bin/python
+
+import matplotlib
+# matplotlib.use("GTK")
+
+from pylab import *
+rc("image", cmap="hot")
+import pylab
+import os
+import imp
+import glob
+import numpy as np
+import htpar
+import argparse
+import time
+import re
+import StringIO
+
+parser = argparse.ArgumentParser("Display info about an input module.")
+parser.add_argument("url")
+parser.add_argument("-t", "--table", default="training")
+parser.add_argument("-s", "--skip", default=0, type=int)
+parser.add_argument("-b", "--bench", default=0, type=int)
+parser.add_argument("-B", "--batched", action="store_true")
+parser.add_argument("-d", "--display", default=None)
+parser.add_argument("-D", "--order", default="BHWD")
+parser.add_argument("-p", "--parallel", default=0, type=int)
+args = parser.parse_args()
+
+def print_sample(sample):
+    keys = sorted(sample.keys())
+    for k in keys:
+        v = sample[k]
+        if isinstance(v, (int, float, str)):
+            print "%15s %s" % (k, repr(v)[:60])
+        elif isinstance(v, unicode):
+            print "%15s %s" % (k, v.strip().encode("utf-8"))
+        elif isinstance(v, list):
+            print "%15s %3d %s" % (k, len(v), str(v)[:60])
+        elif isinstance(v, np.ndarray):
+            print "%15s %s [%s,%s] %s(%s)" % (k,
+                                    v.shape, np.amin(v), np.amax(v),
+                                    np.mean(v), np.var(v)**.5)
+        else:
+            print "%15s %s" % (k, type(v))
+
+def autodecode1(data, tname):
+    extension = re.sub(r".*\.", "", tname).lower()
+    if extension in ["png", "jpg", "jpeg"]:
+        return imread(StringIO.StringIO(data))
+    if extension in ["json", "jsn"]:
+        import simplejson
+        return simplejson.loads(data)
+    if extension in ["pyd", "pickle"]:
+        import pickle
+        return pickle.loads(data)
+    if extension in ["mp", "msgpack", "msg"]:
+        import msgpack
+        return msgpack.unpackb(data, raw=False)
+    return data
+
+def autodecode(sample):
+    return {k: autodecode1(v, k) for k, v in sample.items()}
+
+def iterate_records(url):
+    for shard in htpar.path_shards(url):
+        for record in htpar.tarrecords(shard):
+            yield record
+
+source = iterate_records(args.url)
+
+for i in xrange(args.skip):
+    source.next()
+
+sample = source.next()
+
+print_sample(sample)
+
+if args.display is not None:
+    ion()
+    keys = args.display.split(",")
+    for i in range(1000):
+        sample = autodecode(sample)
+        print_sample(sample)
+        for j,key in enumerate(keys):
+            subplot(1, len(keys), j+1)
+            data = sample[key]
+            if data.ndim==3 and data.shape[2]==1:
+                data = data[:,:,0]
+            if args.batched:
+                data = data[0]
+            gca().set_title("Key: "+key)
+            imshow(data)
+        show()
+        ginput(1, 1000)
+        sample = source.next()
