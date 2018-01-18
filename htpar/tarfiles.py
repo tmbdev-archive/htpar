@@ -21,8 +21,10 @@ import storage
 ### Tar file iterators.
 ###
 
-def tarrecords(fileobj, keys=utils.base_plus_ext):
+def tarrecords(fileobj, keys=utils.base_plus_ext, decode=utils.autodecode):
     """Iterate over tar streams."""
+    if decode is None:
+        decode = lambda x: x
     current_count = 0
     current_prefix = None
     current_sample = None
@@ -46,7 +48,7 @@ def tarrecords(fileobj, keys=utils.base_plus_ext):
         if prefix != current_prefix:
             if current_sample is not None and \
                not current_sample.get("__bad__", False):
-                yield current_sample
+                yield decode(current_sample)
             current_prefix = prefix
             current_sample = dict(__key__=prefix)
         try:
@@ -60,7 +62,7 @@ def tarrecords(fileobj, keys=utils.base_plus_ext):
             current_sample[suffix] = data
             current_count += 1
     if len(current_sample.keys()) > 0:
-        yield current_sample
+        yield decode(current_sample)
     try: del archive
     except: pass
     if closer is None:
@@ -68,13 +70,14 @@ def tarrecords(fileobj, keys=utils.base_plus_ext):
 
 class TarRecords(object):
     """Write records to tar streams."""
-    def __init__(self, stream):
+    def __init__(self, stream, encode=utils.autoencode):
         if isinstance(stream, str):
             stream = storage.storage.open_write(stream)
             self.fileobj = stream
         else:
             self.fileobj = None
         self.tarstream = tarfile.open(fileobj=stream, mode="w:gz")
+        self.encode = encode or (lambda x: x)
 
     def __enter__(self):
         """Context manager."""
@@ -102,6 +105,7 @@ class TarRecords(object):
 
         """
         total = 0
+        obj = self.encode(obj)
         key = obj["__key__"]
         for k in sorted(obj.keys()):
             if k.startswith("_"): continue

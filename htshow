@@ -44,24 +44,6 @@ def print_sample(sample):
         else:
             print "%15s %s" % (k, type(v))
 
-def autodecode1(data, tname):
-    extension = re.sub(r".*\.", "", tname).lower()
-    if extension in ["png", "jpg", "jpeg"]:
-        return imread(StringIO.StringIO(data))
-    if extension in ["json", "jsn"]:
-        import simplejson
-        return simplejson.loads(data)
-    if extension in ["pyd", "pickle"]:
-        import pickle
-        return pickle.loads(data)
-    if extension in ["mp", "msgpack", "msg"]:
-        import msgpack
-        return msgpack.unpackb(data, raw=False)
-    return data
-
-def autodecode(sample):
-    return {k: autodecode1(v, k) for k, v in sample.items()}
-
 def iterate_records(url):
     for shard in htpar.path_shards(url):
         for record in htpar.tarrecords(shard):
@@ -80,7 +62,7 @@ if args.display is not None:
     ion()
     keys = args.display.split(",")
     for i in range(1000):
-        sample = autodecode(sample)
+        sample = htpar.autodecode(sample)
         print_sample(sample)
         for j,key in enumerate(keys):
             subplot(1, len(keys), j+1)

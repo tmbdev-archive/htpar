@@ -80,3 +80,47 @@ def get_keyfun(name):
         return matcher.match
     else:
         raise ValueError("{}: unknown key function".format(name))
+
+def autodecode1(data, tname):
+    extension = re.sub(r".*\.", "", tname).lower()
+    if extension in ["png", "jpg", "jpeg"]:
+        import numpy as np
+        import imageio
+        return np.array(imageio.imread(StringIO.StringIO(data)))
+    if extension in ["json", "jsn"]:
+        import simplejson
+        return simplejson.loads(data)
+    if extension in ["pyd", "pickle"]:
+        import pickle
+        return pickle.loads(data)
+    if extension in ["mp", "msgpack", "msg"]:
+        import msgpack
+        return msgpack.unpackb(data)
+    return data
+
+def autodecode(sample):
+    return {k: autodecode1(v, k) for k, v in sample.items()}
+
+def autoencode1(data, tname):
+    extension = re.sub(r".*\.", "", tname).lower()
+    if extension in ["png", "jpg", "jpeg"]:
+        import imageio
+        stream = StringIO.StringIO()
+        imageio.imsave(stream, data, format=extension)
+        result = stream.getvalue()
+        del stream
+        return result
+    if extension in ["json", "jsn"]:
+        import simplejson
+        return simplejson.dumps(data)
+    if extension in ["pyd", "pickle"]:
+        import pickle
+        return pickle.dumps(data)
+    if extension in ["mp", "msgpack", "msg"]:
+        import msgpack
+        return msgpack.packb(data)
+    return data
+
+def autoencode(sample):
+    return {k: autoencode1(v, k) for k, v in sample.items()}
+
