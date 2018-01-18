@@ -85,8 +85,14 @@ def autodecode1(data, tname):
     extension = re.sub(r".*\.", "", tname).lower()
     if extension in ["png", "jpg", "jpeg"]:
         import numpy as np
-        import imageio
-        return np.array(imageio.imread(StringIO.StringIO(data)))
+        data = StringIO.StringIO(data)
+        try:
+            import imageio
+            return np.array(imageio.imread(data, format=extension))
+        except:
+            pass
+        import scipy.misc
+        return scipy.misc.imread(data)
     if extension in ["json", "jsn"]:
         import simplejson
         return simplejson.loads(data)
