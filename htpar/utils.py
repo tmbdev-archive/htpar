@@ -11,6 +11,7 @@ import imp
 import tempfile
 from dask.distributed import Client
 from contextlib import closing
+import numpy as np
 
 def split_sharded_path(path):
     """Split a path containing shard notation into prefix, format, suffix, and number."""
@@ -111,6 +112,17 @@ def autoencode1(data, tname):
     extension = re.sub(r".*\.", "", tname).lower()
     if extension in ["png", "jpg", "jpeg"]:
         import imageio
+        if isinstance(data, np.ndarray):
+            if data.dtype in [np.dtype("f"), np.dtype("d")]:
+                assert np.amin(data) >= 0.0, (data.dtype, np.amin(data))
+                assert np.amax(data) <= 1.0, (data.dtype, np.amax(data))
+                data = np.array(255 * data, dtype='uint8')
+            elif data.dtype in [np.dtype("uint8")]:
+                pass
+            else:
+                raise ValueError("{}: unknown image array dtype".format(data.dtype))
+        else:
+            raise ValueError("{}: unknown image type".format(type(data)))
         stream = StringIO.StringIO()
         imageio.imsave(stream, data, format=extension)
         result = stream.getvalue()
