@@ -10,7 +10,6 @@ import time
 import imp
 import tempfile
 import hashlib
-from dask.distributed import Client
 from contextlib import closing
 from random import randint
 
@@ -65,7 +64,7 @@ def tarrecords(fileobj, keys=utils.base_plus_ext, decode=utils.autodecode):
         yield decode(current_sample)
     try: del archive
     except: pass
-    if closer is None:
+    if closer is not None:
         closer.close()
 
 class TarRecords(object):

@@ -9,7 +9,6 @@ import warnings
 import time
 import imp
 import tempfile
-from dask.distributed import Client
 from contextlib import closing
 import numpy as np
 
