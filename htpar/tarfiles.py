@@ -189,3 +189,44 @@ class TarShards(object):
         bucket = self.get_shard(obj)
         size = self.streams[bucket][0].write(obj)
         return (bucket, size)
+
+###
+### Helper for shuffling.
+###
+
+def shuffler(data, bufsize=1000, initial=100):
+    """Shuffle the data in the stream.
+
+    This uses a buffer of size `bufsize`. Shuffling at
+    startup is less random; this is traded off against
+    yielding samples quickly.
+
+    :param: data: iterator
+    :param: bufsize: buffer size for shuffling
+    :param: initial: buffer this many elements before returning data
+    :returns: mapper over iterator
+
+    """
+    assert initial <= bufsize
+    buf = []
+    startup = True
+    def get():
+        if data is None:
+            return False
+        try:
+            buf.append(data.next())
+            return True
+        except StopIteration:
+            return False
+    while 1:
+        if not get(): data = None
+        if len(buf) < bufsize:
+            if not get(): data = None
+        if len(buf) == 0: break
+        if startup and len(buf) < initial:
+            continue
+        else:
+            startup = False
+        k = randint(0, len(buf)-1)
+        buf[k], buf[-1] = buf[-1], buf[k]
+        yield buf.pop()
